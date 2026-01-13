@@ -74,11 +74,12 @@ Focus areas:
 def create_doc_search_agent():
     """Create and return the Doc Search Agent graph."""
 
-    # Initialize LLM with tools
+    # Initialize LLM with tools - use max_tokens to speed up responses
     llm = ChatAnthropic(
         model=settings.llm_model,
         api_key=settings.anthropic_api_key,
-        temperature=0
+        temperature=0,
+        max_tokens=2048  # Limit response size for faster generation
     )
 
     tools = [
@@ -161,6 +162,18 @@ def create_doc_search_agent():
     return workflow.compile()
 
 
+# Cache the compiled agent for reuse
+_cached_agent = None
+
+
+def get_doc_search_agent():
+    """Get cached Doc Search Agent (created once, reused)."""
+    global _cached_agent
+    if _cached_agent is None:
+        _cached_agent = create_doc_search_agent()
+    return _cached_agent
+
+
 # Convenience function for direct invocation
 def search_docs(query: str) -> str:
     """
@@ -175,7 +188,8 @@ def search_docs(query: str) -> str:
     with tracer.start_as_current_span("doc_search_agent_invoke") as span:
         span.set_attribute("query", query)
 
-        agent = create_doc_search_agent()
+        # Use cached agent instead of creating new one each time
+        agent = get_doc_search_agent()
 
         result = agent.invoke({
             "messages": [HumanMessage(content=query)],

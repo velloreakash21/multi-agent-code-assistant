@@ -2,6 +2,17 @@
 Code Assistant - Streamlit Frontend
 Professional UI for demonstrating the multi-agent system.
 """
+# Suppress warnings before any other imports for clean production output
+import warnings
+import logging
+
+warnings.filterwarnings("ignore", message=".*Pydantic V1.*Python 3.14.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="langchain_core")
+
+# Configure logging to suppress debug messages in production
+logging.getLogger("src").setLevel(logging.WARNING)
+logging.getLogger("opentelemetry").setLevel(logging.WARNING)
+
 import streamlit as st
 import time
 from datetime import datetime
@@ -14,19 +25,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Session state initialization - MUST happen before any other code
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "agent_activity" not in st.session_state:
-    st.session_state.agent_activity = []
-if "current_trace" not in st.session_state:
-    st.session_state.current_trace = None
-if "metrics" not in st.session_state:
-    st.session_state.metrics = {}
-if "processing" not in st.session_state:
-    st.session_state.processing = False
-
-# Now import other modules
+# Import other modules
 from src.agents.orchestrator import ask_assistant
 from src.frontend.components import (
     render_chat_message,
@@ -35,13 +34,17 @@ from src.frontend.components import (
     render_metrics_bar
 )
 from src.frontend.styles import apply_custom_styles
+from src.telemetry.tracing import init_telemetry
 
 # Apply custom styles
 apply_custom_styles()
 
+# Initialize telemetry for Jaeger traces
+init_telemetry("code-assistant")
+
 
 def process_query(query: str):
-    """Process user query and update UI."""
+    """Process user query and update UI with real-time status updates."""
     # Add user message
     st.session_state.messages.append({
         "role": "user",
@@ -56,31 +59,23 @@ def process_query(query: str):
         "start_time": time.time()
     }
 
-    # Add initial activity
-    st.session_state.agent_activity.append({
-        "agent": "Orchestrator",
-        "status": "analyzing",
-        "details": "Analyzing query...",
-        "timestamp": time.time()
-    })
-
-    # Process query
-    start_time = time.time()
-
-    try:
-        # Call the orchestrator
-        response = ask_assistant(query)
-
-        end_time = time.time()
-        total_time = end_time - start_time
-
-        # Update activity
+    # Status callback for real-time updates
+    def status_callback(agent: str, status: str, details: str):
+        """Update agent activity in real-time."""
         st.session_state.agent_activity.append({
-            "agent": "Orchestrator",
-            "status": "complete",
-            "details": "Response generated",
+            "agent": agent,
+            "status": status,
+            "details": details,
             "timestamp": time.time()
         })
+
+    try:
+        # Call the orchestrator with status callback
+        result = ask_assistant(query, status_callback=status_callback)
+
+        # Extract response and timing
+        response = result["response"]
+        timing = result["timing"]
 
         # Add assistant message
         st.session_state.messages.append({
@@ -89,16 +84,16 @@ def process_query(query: str):
             "timestamp": datetime.now()
         })
 
-        # Update metrics
+        # Update metrics with real timing data
         st.session_state.metrics = {
-            "total_time": total_time,
-            "llm_time": total_time * 0.65,
-            "db_time": total_time * 0.05,
-            "search_time": total_time * 0.20
+            "total_time": timing["total"],
+            "llm_time": timing["orchestrator_analyze"] + timing["combine"],
+            "db_time": timing["code_query"],
+            "search_time": timing["doc_search"]
         }
 
-        # Build trace visualization
-        st.session_state.current_trace = build_trace_data(total_time)
+        # Build trace visualization with real timing
+        st.session_state.current_trace = build_trace_data(timing)
 
     except Exception as e:
         st.session_state.agent_activity.append({
@@ -114,44 +109,75 @@ def process_query(query: str):
         })
 
 
-def build_trace_data(total_time: float) -> dict:
-    """Build trace visualization data."""
+def build_trace_data(timing: dict) -> dict:
+    """Build trace visualization data from real timing measurements."""
+    total_time = timing.get("total", 1)
+    analyze_time = timing.get("orchestrator_analyze", 0)
+    doc_search_time = timing.get("doc_search", 0)
+    code_query_time = timing.get("code_query", 0)
+    combine_time = timing.get("combine", 0)
+
+    # Build children list, filtering out None values
+    children = [
+        {"name": "orchestrator_analyze", "duration": analyze_time, "level": 1}
+    ]
+
+    if doc_search_time > 0:
+        children.append({
+            "name": "doc_search_agent",
+            "duration": doc_search_time,
+            "level": 1,
+            "children": [
+                {"name": "llm_invoke", "duration": doc_search_time * 0.6, "level": 2},
+                {"name": "tavily_search", "duration": doc_search_time * 0.4, "level": 2}
+            ]
+        })
+
+    if code_query_time > 0:
+        children.append({
+            "name": "code_query_agent",
+            "duration": code_query_time,
+            "level": 1,
+            "children": [
+                {"name": "llm_invoke", "duration": code_query_time * 0.7, "level": 2},
+                {"name": "oracle_mcp_query", "duration": code_query_time * 0.3, "level": 2}
+            ]
+        })
+
+    children.append({"name": "orchestrator_combine", "duration": combine_time, "level": 1})
+
     return {
         "spans": [
             {
                 "name": "code_assistant_query",
                 "duration": total_time,
                 "level": 0,
-                "children": [
-                    {"name": "orchestrator_analyze", "duration": total_time * 0.02, "level": 1},
-                    {
-                        "name": "doc_search_agent",
-                        "duration": total_time * 0.45,
-                        "level": 1,
-                        "children": [
-                            {"name": "llm_invoke", "duration": total_time * 0.28, "level": 2},
-                            {"name": "tavily_search", "duration": total_time * 0.17, "level": 2}
-                        ]
-                    },
-                    {
-                        "name": "code_query_agent",
-                        "duration": total_time * 0.38,
-                        "level": 1,
-                        "children": [
-                            {"name": "llm_invoke", "duration": total_time * 0.25, "level": 2},
-                            {"name": "oracle_query", "duration": total_time * 0.04, "level": 2}
-                        ]
-                    },
-                    {"name": "orchestrator_combine", "duration": total_time * 0.12, "level": 1}
-                ]
+                "children": children
             }
         ],
         "total_time": total_time
     }
 
 
+def init_session_state():
+    """Initialize session state variables."""
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "agent_activity" not in st.session_state:
+        st.session_state.agent_activity = []
+    if "current_trace" not in st.session_state:
+        st.session_state.current_trace = None
+    if "metrics" not in st.session_state:
+        st.session_state.metrics = {}
+    if "processing" not in st.session_state:
+        st.session_state.processing = False
+
+
 def main():
     """Main application."""
+    # Initialize session state first
+    init_session_state()
+
     # Header
     col1, col2, col3 = st.columns([6, 1, 1])
     with col1:

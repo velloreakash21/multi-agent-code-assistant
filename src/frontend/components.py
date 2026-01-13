@@ -47,14 +47,15 @@ def render_agent_activity(activity: dict):
     with st.container():
         st.markdown(f"""
         <div style="
-            padding: 10px;
+            padding: 12px;
             border-radius: 8px;
-            background: #f0f2f6;
+            background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
             margin-bottom: 8px;
             border-left: 4px solid {color};
+            color: #ffffff;
         ">
-            <div style="font-weight: bold;">{agent}</div>
-            <div style="font-size: 0.9em; color: #666;">
+            <div style="font-weight: bold; color: #ffffff; font-size: 1em;">{agent}</div>
+            <div style="font-size: 0.9em; color: #b8d4e8;">
                 {details}
             </div>
         </div>

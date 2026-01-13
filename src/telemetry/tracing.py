@@ -2,10 +2,14 @@
 OpenTelemetry tracing with graceful degradation.
 Works even before full telemetry initialization.
 """
+import logging
 import os
 from functools import wraps
 from typing import Callable, Any, Optional
 from contextlib import contextmanager
+
+# Configure module logger
+logger = logging.getLogger(__name__)
 
 # Track if telemetry is initialized
 _telemetry_initialized = False
@@ -43,11 +47,11 @@ def init_telemetry(service_name: str = None) -> Any:
         _tracer_provider = provider
         _telemetry_initialized = True
 
-        print(f"✓ Telemetry initialized: {service_name}")
+        logger.debug(f"Telemetry initialized: {service_name}")
         return provider
 
     except Exception as e:
-        print(f"⚠ Telemetry initialization failed: {e}")
+        logger.debug(f"Telemetry initialization skipped: {e}")
         return None
 
 

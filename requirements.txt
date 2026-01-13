@@ -10,6 +10,10 @@ tavily-python>=0.5.0
 # Database
 oracledb>=2.0.0
 
+# MCP (Model Context Protocol) for SQLcl
+mcp>=1.0.0
+langchain-mcp-adapters>=0.1.0
+
 # OpenTelemetry
 opentelemetry-api>=1.25.0
 opentelemetry-sdk>=1.25.0

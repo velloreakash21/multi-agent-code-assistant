@@ -3,16 +3,25 @@ Oracle Database Tool for LangGraph agents.
 Provides database query capabilities for code snippets.
 
 Supports two modes:
-1. SQLcl MCP (if sqlcl is available)
+1. SQLcl MCP Server (via SSE transport, when SQLCL_MCP_ENABLED=true)
 2. Direct oracledb Python connection (fallback)
+
+The SQLcl MCP mode provides:
+- Standardized AI-database interaction via Model Context Protocol
+- Built-in security with read-only default mode
+- Activity logging in DBTOOLS$MCP_LOG table
+- Session tracking via V$SESSION
 """
-import subprocess
 import json
+import logging
 import os
 from typing import Optional, List, Dict, Any
 from langchain_core.tools import tool
 import oracledb
 from functools import lru_cache
+
+# Configure module logger
+logger = logging.getLogger(__name__)
 
 # Import tracer with graceful fallback
 try:
@@ -31,19 +40,13 @@ except ImportError:
             return noop()
     tracer = NoOpTracer()
 
-
-def _has_sqlcl() -> bool:
-    """Check if SQLcl is available on the system."""
-    try:
-        result = subprocess.run(
-            ["sql", "-version"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+# Import MCP client
+try:
+    from src.tools.sqlcl_mcp_client import get_mcp_client, run_async, MCP_AVAILABLE
+except ImportError:
+    MCP_AVAILABLE = False
+    get_mcp_client = None
+    run_async = None
 
 
 def _get_connection_params() -> dict:
@@ -69,7 +72,7 @@ def _get_connection_pool():
             increment=1
         )
     except Exception as e:
-        print(f"Warning: Could not create connection pool: {e}")
+        logger.debug(f"Could not create connection pool: {e}")
         return None
 
 
@@ -141,85 +144,119 @@ class OracleDirectTool:
                 return {"success": False, "error": str(e)}
 
 
-class OracleSQLclTool:
-    """Tool for executing SQL queries via Oracle SQLcl."""
+class OracleMCPTool:
+    """
+    Tool for executing SQL queries via SQLcl MCP Server.
+
+    Uses the Model Context Protocol (MCP) to communicate with
+    SQLcl MCP server running in Docker via SSE transport.
+
+    This provides:
+    - Standardized AI-database interaction
+    - Built-in security and audit logging
+    - Observable trace spans for MCP operations
+    """
 
     def __init__(self):
-        self.connection_string = self._build_connection_string()
+        """Initialize the MCP tool with client."""
+        self._client = get_mcp_client() if get_mcp_client else None
+        self._server_verified = False
 
-    def _build_connection_string(self) -> str:
-        """Build Oracle connection string from environment variables."""
-        params = _get_connection_params()
-        return f"{params['user']}/{params['password']}@{params['dsn']}"
+    @property
+    def is_available(self) -> bool:
+        """Check if MCP client is available and server is reachable."""
+        if self._client is None or not MCP_AVAILABLE:
+            return False
 
-    def execute_query(self, query: str) -> dict:
+        # Only verify server connectivity once
+        if not self._server_verified:
+            try:
+                import urllib.request
+                import urllib.error
+                # Quick check if MCP server is responding
+                req = urllib.request.Request(
+                    f"http://{self._client.host}:{self._client.port}",
+                    method='HEAD'
+                )
+                req.add_header('User-Agent', 'code-assistant')
+                urllib.request.urlopen(req, timeout=2)
+                self._server_verified = True
+            except (urllib.error.URLError, TimeoutError, OSError):
+                # Server not reachable
+                return False
+
+        return self._server_verified
+
+    def execute_query(self, query: str, params: dict = None) -> dict:
         """
-        Execute a SQL query using SQLcl.
+        Execute a SQL query using SQLcl MCP Server.
 
         Args:
             query: SQL query to execute
+            params: Optional dict of bind parameters
 
         Returns:
             dict with 'success', 'data' or 'error' keys
         """
-        with tracer.start_as_current_span("oracle_sqlcl_query") as span:
+        if not self.is_available:
+            return {"success": False, "error": "MCP client not available"}
+
+        with tracer.start_as_current_span("oracle_mcp_query") as span:
             span.set_attribute("db.system", "oracle")
             span.set_attribute("db.statement", query[:500])
+            span.set_attribute("mcp.enabled", True)
 
             try:
-                # Build SQLcl command
-                sqlcl_command = f"""
-                SET PAGESIZE 0
-                SET FEEDBACK OFF
-                SET HEADING ON
-                SET LINESIZE 32767
-                SET LONG 1000000
-                SET SQLFORMAT JSON
+                # Execute query via MCP client (async to sync bridge)
+                result = run_async(self._client.execute_sql(query, params))
 
-                {query};
-                EXIT;
-                """
-
-                # Execute via subprocess
-                result = subprocess.run(
-                    ["sql", "-S", self.connection_string],
-                    input=sqlcl_command,
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-
-                if result.returncode != 0:
+                if result["success"]:
+                    data = result.get("data", [])
+                    if isinstance(data, list):
+                        span.set_attribute("db.rows_affected", len(data))
+                    return result
+                else:
                     span.set_attribute("error", True)
-                    return {
-                        "success": False,
-                        "error": result.stderr or "Query execution failed"
-                    }
+                    span.set_attribute("error.message", result.get("error", "Unknown error"))
+                    return result
 
-                # Parse JSON output
-                output = result.stdout.strip()
-                if output:
-                    try:
-                        data = json.loads(output)
-                        span.set_attribute("db.rows_affected", len(data.get("items", [])))
-                        return {"success": True, "data": data.get("items", [])}
-                    except json.JSONDecodeError:
-                        # Return raw output if not JSON
-                        return {"success": True, "data": output}
-
-                return {"success": True, "data": []}
-
-            except subprocess.TimeoutExpired:
-                span.set_attribute("error", True)
-                return {"success": False, "error": "Query timeout (30s)"}
             except Exception as e:
                 span.set_attribute("error", True)
+                span.set_attribute("error.message", str(e))
                 return {"success": False, "error": str(e)}
 
 
-# Choose tool implementation based on availability
-# Prefer direct oracledb for reliability
-_oracle_tool = OracleDirectTool()
+def _get_tool_instance():
+    """
+    Get the appropriate tool instance based on configuration.
+
+    Returns OracleMCPTool if MCP is enabled and available,
+    otherwise falls back to OracleDirectTool.
+    """
+    # Check if MCP is enabled in settings
+    try:
+        from src.config import settings
+        mcp_enabled = settings.sqlcl_mcp_enabled
+        debug = settings.debug
+    except ImportError:
+        mcp_enabled = os.getenv("SQLCL_MCP_ENABLED", "true").lower() == "true"
+        debug = os.getenv("DEBUG", "false").lower() == "true"
+
+    if mcp_enabled and MCP_AVAILABLE:
+        mcp_tool = OracleMCPTool()
+        if mcp_tool.is_available:
+            logger.debug("Using SQLcl MCP Server for database access")
+            return mcp_tool
+        else:
+            logger.debug("MCP enabled but server not available, using direct connection")
+
+    logger.debug("Using direct oracledb connection for database access")
+    return OracleDirectTool()
+
+
+# Choose tool implementation based on configuration
+# Uses MCP when enabled and available, falls back to direct oracledb
+_oracle_tool = _get_tool_instance()
 
 
 def _sanitize_input(value: str, max_length: int = 100) -> str:

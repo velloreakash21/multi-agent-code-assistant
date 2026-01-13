@@ -31,5 +31,22 @@ services:
       - COLLECTOR_OTLP_ENABLED=true
     restart: unless-stopped
 
+  sqlcl-mcp:
+    image: container-registry.oracle.com/database/sqlcl:latest
+    container_name: sqlcl-mcp-server
+    command: ["-mcp", "-sse", "-port", "8080"]
+    ports:
+      - "8080:8080"
+    environment:
+      - ORACLE_HOST=oracle-db
+      - ORACLE_PORT=1521
+      - ORACLE_SERVICE=FREEPDB1
+      - ORACLE_USER=codeassist
+      - ORACLE_PASSWORD=CodeAssist123
+    depends_on:
+      oracle-db:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   oracle-data:

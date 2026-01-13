@@ -69,11 +69,12 @@ Languages: python (primary), sql, java
 def create_code_query_agent():
     """Create and return the Code Query Agent graph."""
 
-    # Initialize LLM with tools
+    # Initialize LLM with tools - use max_tokens to speed up responses
     llm = ChatAnthropic(
         model=settings.llm_model,
         api_key=settings.anthropic_api_key,
-        temperature=0
+        temperature=0,
+        max_tokens=2048  # Limit response size for faster generation
     )
 
     tools = [
@@ -156,6 +157,18 @@ def create_code_query_agent():
     return workflow.compile()
 
 
+# Cache the compiled agent for reuse
+_cached_agent = None
+
+
+def get_code_query_agent():
+    """Get cached Code Query Agent (created once, reused)."""
+    global _cached_agent
+    if _cached_agent is None:
+        _cached_agent = create_code_query_agent()
+    return _cached_agent
+
+
 # Convenience function for direct invocation
 def query_code_snippets(query: str) -> str:
     """
@@ -170,7 +183,8 @@ def query_code_snippets(query: str) -> str:
     with tracer.start_as_current_span("code_query_agent_invoke") as span:
         span.set_attribute("query", query)
 
-        agent = create_code_query_agent()
+        # Use cached agent instead of creating new one each time
+        agent = get_code_query_agent()
 
         result = agent.invoke({
             "messages": [HumanMessage(content=query)],

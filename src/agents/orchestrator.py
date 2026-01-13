@@ -4,6 +4,7 @@ Routes queries and combines results for comprehensive answers.
 """
 from typing import TypedDict, Annotated, Sequence, Literal
 import operator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, END
@@ -11,6 +12,13 @@ from langgraph.graph import StateGraph, END
 from src.agents.doc_search import search_docs
 from src.agents.code_query import query_code_snippets
 from src.config import settings
+
+# Import OpenTelemetry context for thread propagation
+try:
+    from opentelemetry import context as otel_context
+    OTEL_AVAILABLE = True
+except ImportError:
+    OTEL_AVAILABLE = False
 
 # Import tracer with graceful fallback
 try:
@@ -89,7 +97,10 @@ def create_orchestrator_agent():
 
             needs_code = any(word in query for word in [
                 "code", "example", "snippet", "implement", "show me",
-                "sample", "function", "class", "script"
+                "sample", "function", "class", "script",
+                # Database-related keywords - always query code snippets for these
+                "database", "oracle", "connect", "sql", "query", "table",
+                "insert", "select", "python", "java", "fastapi", "langchain"
             ])
 
             # Default: if unclear, call both
@@ -106,8 +117,57 @@ def create_orchestrator_agent():
 
             return {"agents_to_call": agents_to_call}
 
+    def call_agents_parallel(state: OrchestratorState) -> OrchestratorState:
+        """Call Doc Search and Code Query agents in parallel for faster response."""
+        with tracer.start_as_current_span("orchestrator_call_agents_parallel") as span:
+            query = state["query"]
+            agents_to_call = state.get("agents_to_call", [])
+            span.set_attribute("query", query)
+            span.set_attribute("agents", str(agents_to_call))
+
+            doc_results = ""
+            code_results = ""
+
+            # Capture current context for thread propagation
+            current_context = otel_context.get_current() if OTEL_AVAILABLE else None
+
+            def run_with_context(func, *args):
+                """Run function with propagated OpenTelemetry context."""
+                if OTEL_AVAILABLE and current_context:
+                    token = otel_context.attach(current_context)
+                    try:
+                        return func(*args)
+                    finally:
+                        otel_context.detach(token)
+                return func(*args)
+
+            # Run agents in parallel using ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = {}
+
+                if "doc_search" in agents_to_call:
+                    futures[executor.submit(run_with_context, search_docs, query)] = "doc_search"
+                if "code_query" in agents_to_call:
+                    futures[executor.submit(run_with_context, query_code_snippets, query)] = "code_query"
+
+                for future in as_completed(futures):
+                    agent_name = futures[future]
+                    try:
+                        result = future.result()
+                        if agent_name == "doc_search":
+                            doc_results = result
+                        else:
+                            code_results = result
+                    except Exception as e:
+                        span.set_attribute(f"{agent_name}.error", str(e))
+
+            span.set_attribute("doc_results_length", len(doc_results))
+            span.set_attribute("code_results_length", len(code_results))
+
+            return {"doc_results": doc_results, "code_results": code_results}
+
     def call_doc_search(state: OrchestratorState) -> OrchestratorState:
-        """Call the Doc Search Agent."""
+        """Call the Doc Search Agent (fallback for single agent)."""
         with tracer.start_as_current_span("orchestrator_call_doc_search") as span:
             query = state["query"]
             span.set_attribute("query", query)
@@ -119,7 +179,7 @@ def create_orchestrator_agent():
             return {"doc_results": result}
 
     def call_code_query(state: OrchestratorState) -> OrchestratorState:
-        """Call the Code Query Agent."""
+        """Call the Code Query Agent (fallback for single agent)."""
         with tracer.start_as_current_span("orchestrator_call_code_query") as span:
             query = state["query"]
             span.set_attribute("query", query)
@@ -171,49 +231,48 @@ Keep it concise but complete."""
                 "messages": [AIMessage(content=response.content)]
             }
 
-    def route_to_agents(state: OrchestratorState) -> list[str]:
-        """Route to the appropriate agents."""
+    def route_to_agents(state: OrchestratorState) -> str:
+        """Route to the appropriate agents - use parallel when both are needed."""
         agents = state.get("agents_to_call", [])
 
         if not agents:
-            return ["combine"]
+            return "combine"
 
-        return agents
+        # If both agents are needed, use parallel execution for speed
+        if len(agents) == 2:
+            return "parallel"
+
+        # Single agent
+        return agents[0]
 
     # Build the graph
     workflow = StateGraph(OrchestratorState)
 
     # Add nodes
     workflow.add_node("analyze", analyze_query)
-    workflow.add_node("doc_search", call_doc_search)
-    workflow.add_node("code_query", call_code_query)
+    workflow.add_node("parallel", call_agents_parallel)  # Parallel execution
+    workflow.add_node("doc_search", call_doc_search)     # Single agent fallback
+    workflow.add_node("code_query", call_code_query)     # Single agent fallback
     workflow.add_node("combine", combine_results)
 
     # Set entry point
     workflow.set_entry_point("analyze")
 
-    # Route based on analysis
+    # Route based on analysis - parallel when both agents needed
     workflow.add_conditional_edges(
         "analyze",
-        lambda s: route_to_agents(s),
+        route_to_agents,
         {
+            "parallel": "parallel",
             "doc_search": "doc_search",
             "code_query": "code_query",
             "combine": "combine"
         }
     )
 
-    # After doc search, check if we also need code
-    workflow.add_conditional_edges(
-        "doc_search",
-        lambda s: "code_query" if "code_query" in s.get("agents_to_call", []) else "combine",
-        {
-            "code_query": "code_query",
-            "combine": "combine"
-        }
-    )
-
-    # Code query always goes to combine
+    # All agent paths go to combine
+    workflow.add_edge("parallel", "combine")
+    workflow.add_edge("doc_search", "combine")
     workflow.add_edge("code_query", "combine")
 
     # Combine ends the workflow
@@ -222,35 +281,120 @@ Keep it concise but complete."""
     return workflow.compile()
 
 
-def ask_assistant(query: str) -> str:
+# Cache the compiled orchestrator for reuse
+_cached_orchestrator = None
+
+
+def get_orchestrator_agent():
+    """Get cached Orchestrator Agent (created once, reused)."""
+    global _cached_orchestrator
+    if _cached_orchestrator is None:
+        _cached_orchestrator = create_orchestrator_agent()
+    return _cached_orchestrator
+
+
+def ask_assistant(query: str, status_callback=None) -> dict:
     """
     Main entry point for the Code Assistant.
 
     Args:
         query: User's question about coding
+        status_callback: Optional callback function(agent, status, details) for real-time updates
 
     Returns:
-        Comprehensive response with docs and code examples
+        Dictionary with 'response' and 'timing' data
     """
+    import time
+    timing = {
+        "orchestrator_analyze": 0,
+        "doc_search": 0,
+        "code_query": 0,
+        "combine": 0,
+        "total": 0
+    }
+    start_time = time.time()
+
     with tracer.start_as_current_span("code_assistant_query") as span:
         span.set_attribute("query", query)
 
-        orchestrator = create_orchestrator_agent()
+        if status_callback:
+            status_callback("Orchestrator", "analyzing", "Analyzing query...")
 
-        result = orchestrator.invoke({
+        # Use cached orchestrator for faster response
+        orchestrator = get_orchestrator_agent()
+
+        # Initial state
+        initial_state = {
             "messages": [HumanMessage(content=query)],
             "query": query,
             "doc_results": "",
             "code_results": "",
             "final_response": "",
             "agents_to_call": []
-        })
+        }
 
-        response = result.get("final_response", "Sorry, I couldn't find an answer.")
+        # Use streaming for real-time updates
+        node_start_time = time.time()
+        final_state = None
+
+        for event in orchestrator.stream(initial_state):
+            # event is a dict with node name as key
+            for node_name, node_output in event.items():
+                node_end_time = time.time()
+                node_duration = node_end_time - node_start_time
+
+                # Track timing
+                if node_name == "analyze":
+                    timing["orchestrator_analyze"] = node_duration
+                    if status_callback:
+                        agents = node_output.get("agents_to_call", [])
+                        status_callback("Orchestrator", "routing", f"Will query: {', '.join(agents) if agents else 'combining results'}")
+                elif node_name == "parallel":
+                    # Parallel execution - time is split between agents
+                    timing["doc_search"] = node_duration / 2
+                    timing["code_query"] = node_duration / 2
+                    if status_callback:
+                        status_callback("Doc Search Agent", "running", "Searching documentation...")
+                        status_callback("Code Query Agent", "running", "Querying code snippets...")
+                        status_callback("Doc Search Agent", "complete", "Documentation retrieved")
+                        status_callback("Code Query Agent", "complete", "Code snippets retrieved")
+                elif node_name == "doc_search":
+                    timing["doc_search"] = node_duration
+                    if status_callback:
+                        status_callback("Doc Search Agent", "running", "Searching documentation...")
+                        status_callback("Doc Search Agent", "complete", "Documentation retrieved")
+                elif node_name == "code_query":
+                    timing["code_query"] = node_duration
+                    if status_callback:
+                        status_callback("Code Query Agent", "running", "Querying code snippets...")
+                        status_callback("Code Query Agent", "complete", "Code snippets retrieved")
+                elif node_name == "combine":
+                    timing["combine"] = node_duration
+                    if status_callback:
+                        status_callback("Orchestrator", "combining", "Synthesizing response...")
+
+                # Update final state
+                if final_state is None:
+                    final_state = node_output
+                else:
+                    final_state.update(node_output)
+
+                node_start_time = time.time()
+
+        timing["total"] = time.time() - start_time
+
+        response = final_state.get("final_response", "Sorry, I couldn't find an answer.") if final_state else "Sorry, I couldn't find an answer."
+
+        if status_callback:
+            status_callback("Orchestrator", "complete", f"Response generated in {timing['total']:.1f}s")
 
         span.set_attribute("response_length", len(response))
+        span.set_attribute("total_time_ms", timing["total"] * 1000)
 
-        return response
+        return {
+            "response": response,
+            "timing": timing
+        }
 
 
 # For testing
@@ -272,9 +416,13 @@ if __name__ == "__main__":
         "What is connection pooling and how do I implement it with Oracle?",
     ]
 
+    def print_status(agent, status, details):
+        print(f"  [{agent}] {status}: {details}")
+
     for query in test_queries:
         print(f"\n{'='*70}")
         print(f"Query: {query}")
         print('='*70)
-        result = ask_assistant(query)
-        print(result)
+        result = ask_assistant(query, status_callback=print_status)
+        print(f"\nResponse:\n{result['response']}")
+        print(f"\nTiming: {result['timing']}")
