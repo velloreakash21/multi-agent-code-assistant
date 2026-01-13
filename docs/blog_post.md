@@ -23,13 +23,7 @@ This guide demonstrates building a **Code Assistant**—a production-grade multi
 
 The system follows a hub-and-spoke architecture with three specialized agents:
 
-![Architecture Diagram](images/architecture-diagram.png)
-<!--
-SCREENSHOT: Architecture diagram showing the multi-agent system
-- Create using draw.io, Excalidraw, or similar tool
-- Show: User Query → Orchestrator Agent → Doc Search Agent (Tavily) + Code Query Agent (Oracle via MCP)
-- Include OpenTelemetry/Jaeger for trace collection
--->
+![Architecture Diagram](images/architecture.png)
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
@@ -174,14 +168,7 @@ code_assistant_query [77s]
 └── orchestrator_combine [17s]
 ```
 
-![Jaeger Trace Visualization](images/jaeger-trace.png)
-<!--
-SCREENSHOT: Jaeger UI showing distributed trace
-- Open http://localhost:16686
-- Find trace for "code-assistant" service
-- Capture the waterfall view showing span hierarchy
-- Should show: orchestrator → doc_search_agent + code_query_agent → oracle_query spans
--->
+![Jaeger Trace Visualization](images/jaeger-trace-view.png)
 
 From this trace, we can immediately identify:
 - Total request latency and breakdown by component
@@ -195,14 +182,7 @@ From this trace, we can immediately identify:
 
 The frontend provides real-time visibility into agent activity:
 
-![Streamlit UI](images/streamlit-ui.png)
-<!--
-SCREENSHOT: Streamlit application interface
-- Open http://localhost:8501
-- Enter query: "How do I connect to Oracle database?"
-- Wait for response to complete
-- Capture showing: Chat panel, Agent Activity panel, Trace Visualization, Metrics bar
--->
+![Streamlit UI](images/streamlit-demo.png)
 
 **Key UI Components:**
 - **Chat Panel** - Conversation history with formatted responses
@@ -225,8 +205,8 @@ SCREENSHOT: Streamlit application interface
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/code-assistant.git
-cd code-assistant
+git clone https://github.com/velloreakash21/multi-agent-code-assistant.git
+cd multi-agent-code-assistant
 
 # Start infrastructure
 docker-compose up -d
