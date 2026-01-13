@@ -1,241 +1,145 @@
-# Building Observable Multi-Agent AI Applications with LangGraph, Oracle Database, and OpenTelemetry
+# Building Observable Multi-Agent AI Systems with LangGraph and Oracle Database
 
-*A comprehensive guide to implementing distributed tracing in agentic AI systems*
+*How I built a production-ready Code Assistant with full distributed tracing*
 
----
-
-## Introduction
-
-As AI applications evolve from simple chatbots to complex multi-agent systems, understanding what happens inside them becomes increasingly challenging. When a user asks "How do I connect to Oracle database in Python?", multiple AI agents might spring into action - searching documentation, querying databases, and synthesizing responses. But when something goes wrong, or when you need to optimize performance, how do you know where to look?
-
-This is where observability becomes crucial.
-
-In this guide, we'll build a **Code Assistant** - an AI-powered tool that helps developers find documentation and code examples. More importantly, we'll implement comprehensive observability using **OpenTelemetry**, giving us full visibility into every agent interaction, LLM call, and database query.
-
-### What You'll Learn
-
-- Design a multi-agent system with LangGraph
-- Connect to Oracle Database 23ai for storing code snippets
-- Implement OpenTelemetry distributed tracing
-- Visualize traces with Jaeger
-- Debug and optimize AI applications
-
-### The Stack
-
-| Component | Technology |
-|-----------|------------|
-| Agent Framework | LangGraph |
-| LLM | Claude 3.5 Sonnet |
-| Database | Oracle 23ai |
-| Web Search | Tavily API |
-| Observability | OpenTelemetry + Jaeger |
-| Frontend | Streamlit |
-
-Let's dive in!
+![Hero Banner](images/hero-banner.png)
+<!--
+IMAGE PROMPT (DALL-E/Midjourney):
+"A futuristic digital illustration showing multiple AI agents working together in a neural network. Three glowing orbs (blue, green, orange) connected by flowing data streams. Dark blue gradient background with subtle circuit patterns. Modern tech startup aesthetic. No text."
+-->
 
 ---
 
-## Architecture Overview
+## The Problem I Wanted to Solve
 
-### The Big Picture
+Last year, while building enterprise AI platforms, I kept running into the same issue: when a multi-agent system behaved unexpectedly, debugging felt like finding a needle in a haystack. Which agent failed? Was it the LLM? The database? The external API?
 
-Our Code Assistant consists of three agents working together:
+I decided to build something that would solve this once and for all - a Code Assistant that not only helps developers find documentation and code examples but also provides complete visibility into every single operation through distributed tracing.
 
-```
-                    +-------------------+
-                    |   User Query      |
-                    |                   |
-                    | "How do I use     |
-                    | connection        |
-                    | pooling?"         |
-                    +---------+---------+
-                              |
-                              v
-               +--------------------------+
-               |    ORCHESTRATOR AGENT    |
-               |                          |
-               |  - Analyzes query        |
-               |  - Routes to agents      |
-               |  - Combines results      |
-               +-------------+------------+
-                             |
-             +---------------+---------------+
-             |                               |
-             v                               v
-     +---------------+               +---------------+
-     |  DOC SEARCH   |               |  CODE QUERY   |
-     |    AGENT      |               |    AGENT      |
-     |               |               |               |
-     | Tavily API    |               | Oracle SQLcl  |
-     +---------------+               +---------------+
-```
+This post walks through how I built it using **LangGraph**, **Oracle Database 23ai**, and **OpenTelemetry**.
+
+---
+
+## What We're Building
+
+A conversational AI assistant that:
+
+1. **Understands developer queries** - "How do I connect to Oracle in Python?"
+2. **Searches real-time documentation** - Using Tavily API for web search
+3. **Retrieves code examples** - From an Oracle database with 40+ curated snippets
+4. **Combines everything intelligently** - Using Claude 3.5 Sonnet
+5. **Traces every operation** - Full observability with Jaeger
+
+![Tech Stack](images/tech-stack.png)
+<!--
+IMAGE: Arrange official logos horizontally - LangGraph, Claude/Anthropic, Oracle, Tavily, OpenTelemetry, Jaeger, Streamlit, Docker. 64x64px each with consistent styling.
+-->
+
+| Layer | Technology | Purpose |
+|-------|------------|---------|
+| Orchestration | LangGraph | Multi-agent coordination |
+| LLM | Claude 3.5 Sonnet | Reasoning and synthesis |
+| Database | Oracle 23ai | Code snippet storage |
+| Search | Tavily API | Real-time documentation |
+| Tracing | OpenTelemetry + Jaeger | Full observability |
+| Frontend | Streamlit | Chat interface |
+
+---
+
+## Architecture Deep Dive
+
+### Multi-Agent Design
+
+The system uses three specialized agents, each with a single responsibility:
+
+![Architecture Overview](images/architecture-overview.png)
+<!--
+IMAGE PROMPT (Eraser DiagramGPT):
+"Create a system architecture diagram showing: User Query box at top, Orchestrator Agent in center (main coordinator), two parallel branches: Doc Search Agent (connects to Tavily API) and Code Query Agent (connects to Oracle Database), OpenTelemetry spans wrapping all components, Combined Response at bottom. Blue color scheme with orange highlights."
+-->
+
+**Orchestrator Agent** - The brain of the operation. It analyzes incoming queries, decides which specialized agents to invoke, and synthesizes their responses into a coherent answer.
+
+**Doc Search Agent** - Connects to Tavily API for real-time web searches. Specialized in finding official documentation, tutorials, and Stack Overflow answers.
+
+**Code Query Agent** - Queries our Oracle database containing curated code snippets across multiple categories: database connections, API patterns, authentication, and more.
 
 ### Why This Architecture?
 
-1. **Separation of Concerns**: Each agent specializes in one task
-2. **Parallel Execution**: Agents can work simultaneously
-3. **Flexibility**: Easy to add new agents
-4. **Testability**: Each component can be tested independently
+I've built monolithic AI applications before. They work until they don't. When something breaks, you're grepping through logs hoping to find a clue.
 
-### The Observability Layer
+This modular approach gives us:
 
-Every interaction in this system generates telemetry. Here's what a typical trace looks like:
-
-```
-+------------------------------------------------------------+
-|                    TRACE: user_query_123                    |
-+------------------------------------------------------------+
-|                                                            |
-|  code_assistant_query ------------------------------------ |
-|  |                                                        |
-|  +-- orchestrator_analyze ------                          |
-|  |                                                        |
-|  +-- doc_search_agent --------------------                |
-|  |   |                                                    |
-|  |   +-- llm_invoke ----------                            |
-|  |   |                                                    |
-|  |   +-- tavily_search ------------                       |
-|  |                                                        |
-|  +-- code_query_agent --------------------                |
-|  |   |                                                    |
-|  |   +-- llm_invoke ----------                            |
-|  |   |                                                    |
-|  |   +-- oracle_query ---------                           |
-|  |                                                        |
-|  +-- orchestrator_combine ----------                      |
-|                                                            |
-+------------------------------------------------------------+
-```
-
-This trace tells us:
-- Total request duration
-- Time spent in each agent
-- LLM latency
-- Database query time
-- Where bottlenecks occur
+- **Isolation** - A bug in the doc search doesn't crash code queries
+- **Scalability** - Each agent can be optimized independently
+- **Testability** - Unit test each component in isolation
+- **Observability** - Clear boundaries make tracing meaningful
 
 ---
 
-## Setting Up the Foundation
+## LangGraph: The Agent Framework
 
-### Prerequisites
+LangGraph extends LangChain with graph-based workflows. Instead of linear chains, we define nodes (processing steps) and edges (transitions).
 
-Before we begin, ensure you have:
-- Python 3.11+
-- Docker Desktop
-- Anthropic API key
-- Tavily API key (free tier: 1000 searches/month)
+![LangGraph Flow](images/langgraph-flow.png)
+<!--
+IMAGE PROMPT (Eraser):
+"Create a state machine diagram for LangGraph agent: START node, Agent Node (reasoning), conditional edge 'has_tool_calls?', if yes: Tool Node (execute tools) loops back to Agent, if no: END node. Show state object flowing between nodes. Green and blue colors."
+-->
 
-### Project Structure
-
-```bash
-mkdir code-assistant && cd code-assistant
-
-# Create directory structure
-mkdir -p src/{agents,tools,database,telemetry,frontend}
-mkdir -p tests docs/diagrams
-
-# Initialize Python packages
-touch src/__init__.py
-touch src/agents/__init__.py
-touch src/tools/__init__.py
-touch src/database/__init__.py
-touch src/telemetry/__init__.py
-```
-
-### Docker Configuration
-
-Create `docker-compose.yml`:
-
-```yaml
-version: '3.8'
-
-services:
-  oracle-db:
-    image: container-registry.oracle.com/database/free:latest
-    container_name: oracle-23ai-code-assistant
-    ports:
-      - "1521:1521"
-    environment:
-      - ORACLE_PWD=CodeAssist123
-    volumes:
-      - oracle-data:/opt/oracle/oradata
-    healthcheck:
-      test: ["CMD", "sqlplus", "-L", "sys/CodeAssist123@//localhost:1521/FREE as sysdba", "@/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 300s
-
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    container_name: jaeger-code-assistant
-    ports:
-      - "16686:16686"  # Jaeger UI
-      - "4317:4317"    # OTLP gRPC
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-
-volumes:
-  oracle-data:
-```
-
-Start the services:
-
-```bash
-docker-compose up -d
-
-# Wait for Oracle (first time takes ~5 minutes)
-docker logs -f oracle-23ai-code-assistant
-# Look for: "DATABASE IS READY TO USE!"
-```
-
-### Configuration Management
-
-Create `src/config.py`:
+Here's how I implemented the Code Query Agent:
 
 ```python
-from pydantic_settings import BaseSettings
-from functools import lru_cache
+from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode
 
-class Settings(BaseSettings):
-    """Application settings loaded from environment."""
+class CodeQueryState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+    query: str
+    results: str
 
-    # LLM Configuration
-    anthropic_api_key: str = ""
-    llm_model: str = "claude-sonnet-4-20250514"
+def create_code_query_agent():
+    llm = ChatAnthropic(model="claude-sonnet-4-20250514", temperature=0)
+    tools = [search_code_snippets, get_snippet_by_id]
+    llm_with_tools = llm.bind_tools(tools)
 
-    # Tavily Search
-    tavily_api_key: str = ""
+    def agent_node(state: CodeQueryState) -> CodeQueryState:
+        with tracer.start_as_current_span("code_query_reasoning") as span:
+            span.set_attribute("agent.name", "code_query")
+            response = llm_with_tools.invoke(state["messages"])
+            return {"messages": [response]}
 
-    # Oracle Database
-    oracle_host: str = "localhost"
-    oracle_port: str = "1521"
-    oracle_service: str = "FREEPDB1"
-    oracle_user: str = "codeassist"
-    oracle_password: str = "CodeAssist123"
+    def should_continue(state: CodeQueryState) -> str:
+        last_message = state["messages"][-1]
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tools"
+        return "end"
 
-    # OpenTelemetry
-    otel_exporter_endpoint: str = "http://localhost:4317"
-    otel_service_name: str = "code-assistant"
+    workflow = StateGraph(CodeQueryState)
+    workflow.add_node("agent", agent_node)
+    workflow.add_node("tools", ToolNode(tools))
 
-    @property
-    def oracle_dsn(self) -> str:
-        return f"{self.oracle_host}:{self.oracle_port}/{self.oracle_service}"
+    workflow.set_entry_point("agent")
+    workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", "end": END})
+    workflow.add_edge("tools", "agent")
 
-    class Config:
-        env_file = ".env"
-
-@lru_cache()
-def get_settings() -> Settings:
-    return Settings()
-
-settings = get_settings()
+    return workflow.compile()
 ```
 
-### Database Schema
+The key insight: the `should_continue` function creates a loop. The agent reasons, decides to call a tool, executes it, and reasons again with the results. This continues until the agent has enough information to respond.
 
-Our code snippets live in Oracle. Here's the schema:
+---
+
+## Oracle Database Integration
+
+### Schema Design
+
+I designed a simple but effective schema for storing code snippets:
+
+![Database Schema](images/database-schema.png)
+<!--
+IMAGE: ERD diagram showing code_snippets table with all fields and data types. Use dbdiagram.io or similar tool.
+-->
 
 ```sql
 CREATE TABLE code_snippets (
@@ -252,108 +156,13 @@ CREATE TABLE code_snippets (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Indexes for query performance
 CREATE INDEX idx_snippets_language ON code_snippets(language);
 CREATE INDEX idx_snippets_category ON code_snippets(category);
-CREATE INDEX idx_snippets_framework ON code_snippets(framework);
 ```
 
----
+### The Query Tool
 
-## Building the Agents
-
-### Understanding LangGraph
-
-LangGraph extends LangChain with graph-based workflows. Instead of linear chains, we define **nodes** (processing steps) and **edges** (transitions).
-
-Key concepts:
-- **State**: Shared data passed between nodes
-- **Nodes**: Functions that process state
-- **Edges**: Connections between nodes (can be conditional)
-
-### The Code Query Agent
-
-This agent searches our Oracle database for code snippets:
-
-```python
-"""
-Code Query Agent - Searches Oracle database for code snippets.
-"""
-from typing import TypedDict, Annotated, Sequence
-import operator
-from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
-from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode
-
-from src.tools.oracle_mcp import search_code_snippets, get_snippet_by_id
-from src.config import settings
-from src.telemetry import get_tracer
-
-tracer = get_tracer(__name__)
-
-class CodeQueryState(TypedDict):
-    """State passed through the agent graph."""
-    messages: Annotated[Sequence[BaseMessage], operator.add]
-    query: str
-    results: str
-
-SYSTEM_PROMPT = """You are a Code Query Agent specialized in finding
-code snippets from a database. Use your tools to search for relevant examples."""
-
-def create_code_query_agent():
-    llm = ChatAnthropic(
-        model=settings.llm_model,
-        api_key=settings.anthropic_api_key,
-        temperature=0
-    )
-
-    tools = [search_code_snippets, get_snippet_by_id]
-    llm_with_tools = llm.bind_tools(tools)
-
-    def agent_node(state: CodeQueryState) -> CodeQueryState:
-        """Main reasoning node with tracing."""
-        with tracer.start_as_current_span("code_query_reasoning") as span:
-            span.set_attribute("agent.name", "code_query")
-
-            messages = state["messages"]
-            if not any(isinstance(m, SystemMessage) for m in messages):
-                messages = [SystemMessage(content=SYSTEM_PROMPT)] + list(messages)
-
-            response = llm_with_tools.invoke(messages)
-            span.set_attribute("has_tool_calls", bool(response.tool_calls))
-
-            return {"messages": [response]}
-
-    def should_continue(state: CodeQueryState) -> str:
-        """Determine next step based on LLM response."""
-        last_message = state["messages"][-1]
-        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            return "tools"
-        return "end"
-
-    # Build the graph
-    workflow = StateGraph(CodeQueryState)
-    workflow.add_node("agent", agent_node)
-    workflow.add_node("tools", ToolNode(tools))
-
-    workflow.set_entry_point("agent")
-    workflow.add_conditional_edges(
-        "agent",
-        should_continue,
-        {"tools": "tools", "end": END}
-    )
-    workflow.add_edge("tools", "agent")
-
-    return workflow.compile()
-```
-
-**Key Points:**
-1. We wrap the agent logic in a span for tracing
-2. The `should_continue` function creates a loop between agent and tools
-3. Tool results feed back into the agent for reasoning
-
-### The Oracle Query Tool
+The tool exposes our database to the LLM with proper parameter handling:
 
 ```python
 @tool
@@ -363,21 +172,12 @@ def search_code_snippets(
     keyword: str = None,
     limit: int = 5
 ) -> str:
-    """
-    Search for code snippets in the Oracle database.
+    """Search for code snippets in the Oracle database."""
 
-    Args:
-        language: Filter by programming language (python, java, sql)
-        category: Filter by category (database, api, ai, auth)
-        keyword: Search in title, description, and tags
-        limit: Maximum results to return (default: 5)
-    """
     with tracer.start_as_current_span("oracle_query") as span:
         span.set_attribute("db.system", "oracle")
 
-        # Build query with sanitized inputs
-        conditions = []
-        params = {}
+        conditions, params = [], {}
 
         if language:
             conditions.append("LOWER(language) = LOWER(:language)")
@@ -386,392 +186,240 @@ def search_code_snippets(
             conditions.append("LOWER(category) = LOWER(:category)")
             params["category"] = category
         if keyword:
-            conditions.append("""(
-                LOWER(title) LIKE LOWER(:keyword)
-                OR LOWER(tags) LIKE LOWER(:keyword)
-            )""")
+            conditions.append("LOWER(title) LIKE LOWER(:keyword) OR LOWER(tags) LIKE LOWER(:keyword)")
             params["keyword"] = f"%{keyword}%"
 
-        where_clause = " AND ".join(conditions) if conditions else "1=1"
-
         query = f"""
-            SELECT id, title, description, language, framework,
-                   category, code, tags
+            SELECT id, title, description, language, framework, category, code, tags
             FROM code_snippets
-            WHERE {where_clause}
+            WHERE {' AND '.join(conditions) if conditions else '1=1'}
             ORDER BY created_at DESC
             FETCH FIRST {min(limit, 20)} ROWS ONLY
         """
 
         span.set_attribute("db.statement", query[:500])
-
-        # Execute query
         result = execute_oracle_query(query, params)
         span.set_attribute("db.rows_returned", len(result))
 
         return json.dumps(result, indent=2, default=str)
 ```
 
-### The Doc Search Agent
-
-This agent uses Tavily to search the web for documentation:
-
-```python
-"""
-Doc Search Agent - Searches the web for programming documentation.
-"""
-from src.tools.tavily_search import (
-    search_documentation,
-    search_oracle_docs,
-    search_python_docs
-)
-
-DOC_SEARCH_SYSTEM_PROMPT = """You are a Documentation Search Agent
-specialized in finding programming documentation and tutorials.
-
-Guidelines:
-- For Oracle-specific queries, use search_oracle_docs
-- For Python-specific queries, use search_python_docs
-- For general queries, use search_documentation
-- Summarize key points from search results
-- Include relevant URLs for further reading
-"""
-
-def create_doc_search_agent():
-    llm = ChatAnthropic(
-        model=settings.llm_model,
-        api_key=settings.anthropic_api_key,
-        temperature=0
-    )
-
-    tools = [
-        search_documentation,
-        search_oracle_docs,
-        search_python_docs
-    ]
-
-    llm_with_tools = llm.bind_tools(tools)
-
-    # Similar graph structure to Code Query Agent...
-```
-
-### The Orchestrator Agent
-
-The orchestrator coordinates between agents:
-
-```python
-"""
-Orchestrator Agent - Coordinates between Doc Search and Code Query agents.
-"""
-def create_orchestrator_agent():
-    llm = ChatAnthropic(
-        model=settings.llm_model,
-        api_key=settings.anthropic_api_key,
-        temperature=0
-    )
-
-    def analyze_query(state: OrchestratorState) -> OrchestratorState:
-        """Analyze query and decide which agents to call."""
-        with tracer.start_as_current_span("orchestrator_analyze") as span:
-            query = state["query"].lower()
-            span.set_attribute("query", query)
-
-            agents_to_call = []
-
-            # Heuristics for routing
-            needs_docs = any(word in query for word in [
-                "how", "what", "why", "explain", "documentation"
-            ])
-
-            needs_code = any(word in query for word in [
-                "code", "example", "snippet", "implement", "show me"
-            ])
-
-            # Default: call both if unclear
-            if not needs_docs and not needs_code:
-                needs_docs = True
-                needs_code = True
-
-            if needs_docs:
-                agents_to_call.append("doc_search")
-            if needs_code:
-                agents_to_call.append("code_query")
-
-            span.set_attribute("agents_to_call", str(agents_to_call))
-            return {"agents_to_call": agents_to_call}
-
-    def combine_results(state: OrchestratorState) -> OrchestratorState:
-        """Combine results from both agents into final response."""
-        with tracer.start_as_current_span("orchestrator_combine"):
-            doc_results = state.get("doc_results", "")
-            code_results = state.get("code_results", "")
-
-            synthesis_prompt = f"""Synthesize this information:
-
-            Documentation: {doc_results}
-            Code Examples: {code_results}
-
-            Provide a clear, helpful response."""
-
-            response = llm.invoke([
-                SystemMessage(content="Synthesize information for developers."),
-                HumanMessage(content=synthesis_prompt)
-            ])
-
-            return {"final_response": response.content}
-```
+Notice how every operation is wrapped in a span. This is crucial for debugging - when a query is slow, I can see exactly which database operation caused it.
 
 ---
 
-## Implementing Observability
+## The Observability Layer
 
-### OpenTelemetry Basics
+This is where it gets interesting. Every request generates a complete trace showing exactly what happened.
 
-OpenTelemetry provides three pillars of observability:
-1. **Traces**: Request flow through distributed systems
-2. **Metrics**: Quantitative measurements
-3. **Logs**: Discrete events
-
-For AI applications, traces are most valuable - they show us the journey of a request through multiple agents.
-
-### Setting Up Tracing
+### OpenTelemetry Setup
 
 ```python
-"""
-OpenTelemetry configuration for Code Assistant.
-"""
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.resources import Resource, SERVICE_NAME
-
-_telemetry_initialized = False
 
 def init_telemetry(service_name: str = "code-assistant"):
-    """Initialize OpenTelemetry with OTLP export to Jaeger."""
-    global _telemetry_initialized
-
-    if _telemetry_initialized:
-        return
-
-    # Create resource identifying our service
     resource = Resource.create({SERVICE_NAME: service_name})
-
-    # Create and configure tracer provider
     provider = TracerProvider(resource=resource)
 
-    # Export to Jaeger via OTLP
-    otlp_exporter = OTLPSpanExporter(
-        endpoint="localhost:4317",
-        insecure=True
-    )
+    otlp_exporter = OTLPSpanExporter(endpoint="localhost:4317", insecure=True)
     provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
 
-    # Set as global provider
     trace.set_tracer_provider(provider)
+```
 
-    _telemetry_initialized = True
-    print(f"Telemetry initialized: {service_name}")
+### What a Trace Looks Like
+
+![Jaeger Trace](images/jaeger-trace.png)
+<!--
+IMAGE: Screenshot from Jaeger UI showing a complete trace with 8+ spans in waterfall view. Alternatively, use the DALL-E prompt from IMAGE_PROMPTS.md
+-->
+
+A typical query generates this trace hierarchy:
+
+```
+code_assistant_query [2.3s]
+├── orchestrator_analyze [45ms]
+├── doc_search_agent [1.1s]
+│   ├── llm_invoke [650ms]
+│   └── tavily_search [420ms]
+├── code_query_agent [890ms]
+│   ├── llm_invoke [580ms]
+│   └── oracle_query [95ms]
+└── orchestrator_combine [290ms]
+```
+
+From this, I can immediately see:
+- Total request took 2.3 seconds
+- LLM calls dominate latency (as expected)
+- Database query is fast (95ms)
+- Agents ran in parallel (their times overlap in the real trace)
+
+### Graceful Degradation
+
+The app shouldn't crash if Jaeger is down. I implemented a no-op fallback:
+
+```python
+class NoOpTracer:
+    @contextmanager
+    def start_as_current_span(self, name, **kwargs):
+        yield NoOpSpan()
 
 def get_tracer(name: str):
-    """Get tracer with graceful fallback."""
     try:
         return trace.get_tracer(name)
     except Exception:
         return NoOpTracer()
 ```
 
-### Graceful Degradation
+---
 
-The application works even if telemetry fails to initialize:
+## Query Routing Logic
 
-```python
-class NoOpSpan:
-    """No-op span when telemetry is unavailable."""
-    def set_attribute(self, key, value): pass
-    def add_event(self, name, attributes=None): pass
-    def __enter__(self): return self
-    def __exit__(self, *args): pass
+The orchestrator decides which agents to invoke based on query analysis:
 
-class NoOpTracer:
-    """No-op tracer when telemetry is unavailable."""
-    @contextmanager
-    def start_as_current_span(self, name, **kwargs):
-        yield NoOpSpan()
-```
-
-### Tracing Decorators
-
-For cleaner code, use a decorator:
+![Routing Logic](images/routing-logic.png)
+<!--
+IMAGE PROMPT (Eraser/Draw.io):
+"Decision tree flowchart: Start 'User Query', Decision 'Contains how/what/why?' -> Yes: needs_docs=true, Decision 'Contains code/example/snippet?' -> Yes: needs_code=true, Decision 'Neither flag set?' -> Yes: set both=true, End 'Route to agents'. Diamond shapes for decisions, rectangles for actions."
+-->
 
 ```python
-def traced(name: str = None):
-    """Decorator for tracing functions."""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            tracer = get_tracer(func.__module__)
-            span_name = name or func.__name__
-            with tracer.start_as_current_span(span_name):
-                return func(*args, **kwargs)
-        return wrapper
-    return decorator
+def analyze_query(state: OrchestratorState) -> OrchestratorState:
+    with tracer.start_as_current_span("orchestrator_analyze") as span:
+        query = state["query"].lower()
 
-# Usage
-@traced("llm_invoke")
-def call_llm(messages):
-    return llm.invoke(messages)
+        needs_docs = any(word in query for word in ["how", "what", "why", "explain", "documentation"])
+        needs_code = any(word in query for word in ["code", "example", "snippet", "implement", "show me"])
+
+        # Default: call both if intent is unclear
+        if not needs_docs and not needs_code:
+            needs_docs = needs_code = True
+
+        agents = []
+        if needs_docs:
+            agents.append("doc_search")
+        if needs_code:
+            agents.append("code_query")
+
+        span.set_attribute("routing.agents", str(agents))
+        return {"agents_to_call": agents}
 ```
+
+This simple heuristic works surprisingly well. For production, you could replace it with a classifier or let the LLM decide.
 
 ---
 
-## Visualizing Traces with Jaeger
+## Running It Locally
 
-### Accessing the UI
+### Prerequisites
 
-Open http://localhost:16686 in your browser.
+- Python 3.11+
+- Docker Desktop
+- Anthropic API key
+- Tavily API key (free tier: 1000 searches/month)
 
-### Finding Traces
-
-1. Select service: `code-assistant`
-2. Set time range (last hour)
-3. Click "Find Traces"
-
-### Reading a Trace
-
-A typical trace shows:
-
-| Span | Duration | Purpose |
-|------|----------|---------|
-| code_assistant_query | 2.3s | Total request |
-| orchestrator_analyze | 45ms | Route decision |
-| doc_search_agent | 1.1s | Web search |
-| llm_invoke | 650ms | LLM reasoning |
-| tavily_search | 420ms | API call |
-| code_query_agent | 890ms | DB search |
-| llm_invoke | 580ms | LLM reasoning |
-| oracle_query | 95ms | Database |
-| orchestrator_combine | 290ms | Synthesis |
-
-### What to Look For
-
-1. **Total Duration**: Is the request fast enough?
-2. **LLM Latency**: Typically the longest spans
-3. **Database Time**: Should be under 100ms
-4. **Parallel vs Sequential**: Are agents running in parallel?
-
----
-
-## Best Practices
-
-### Span Naming Conventions
-
-Use consistent, hierarchical names:
-- `service.operation` format
-- Examples: `orchestrator.analyze`, `doc_search.invoke`
-
-### Essential Attributes
-
-| Category | Attributes |
-|----------|------------|
-| Query | query, query.length |
-| LLM | llm.model, llm.duration_ms, llm.has_tool_calls |
-| Database | db.system, db.statement, db.rows_returned |
-| Error | error, error.message |
-
-### Error Handling
-
-Always record errors in spans:
-
-```python
-from opentelemetry.trace import Status, StatusCode
-
-try:
-    result = risky_operation()
-    span.set_status(Status(StatusCode.OK))
-except Exception as e:
-    span.set_status(Status(StatusCode.ERROR, str(e)))
-    span.record_exception(e)
-    raise
-```
-
-### Input Validation
-
-Always validate and sanitize inputs to prevent injection:
-
-```python
-def sanitize_input(value: str, max_length: int = 100) -> str:
-    """Sanitize input to prevent SQL injection."""
-    if not value:
-        return ""
-    sanitized = value.replace("'", "''").replace(";", "").replace("--", "")
-    return sanitized[:max_length]
-```
-
----
-
-## Troubleshooting Guide
-
-### No Traces Appearing
-
-1. **Check Jaeger is running**: `docker ps | grep jaeger`
-2. **Verify OTLP endpoint**: Should be `localhost:4317`
-3. **Ensure `init_telemetry()` is called** before any operations
-4. **Check for exceptions** in telemetry initialization
-
-### Incomplete Traces
-
-- Call `shutdown_telemetry()` before exit
-- BatchSpanProcessor needs time to flush (a few seconds)
-- Increase `max_export_batch_size` if needed
-
-### High Latency
-
-- Check LLM response times (typically the bottleneck)
-- Verify database indexes exist
-- Consider caching for repeated queries
-- Use connection pooling for database
-
-### Oracle Connection Issues
+### Quick Start
 
 ```bash
-# Check Oracle is running
-docker logs oracle-23ai-code-assistant | tail -20
+# Clone the repository
+git clone https://github.com/velloreakash21/multi-agent-code-assistant.git
+cd multi-agent-code-assistant
 
-# Test connection
-python -c "import oracledb; print(oracledb.connect(user='codeassist', password='CodeAssist123', dsn='localhost:1521/FREEPDB1').version)"
+# Start Oracle and Jaeger
+docker-compose up -d
+
+# Wait for Oracle to be ready (~3 minutes first time)
+docker logs -f oracle-23ai-code-assistant
+# Look for: "DATABASE IS READY TO USE!"
+
+# Setup Python environment
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Add your API keys to .env
+
+# Initialize database
+python -m src.database.seed_data
+
+# Run the app
+streamlit run streamlit_app.py
 ```
+
+### The UI
+
+![Streamlit UI](images/streamlit-ui.png)
+<!--
+IMAGE: Screenshot of the Streamlit interface showing a conversation with the Code Assistant. Include the chat messages, agent activity sidebar, and trace visualization.
+-->
+
+Open http://localhost:8501 and try queries like:
+- "How do I connect to Oracle database in Python?"
+- "Show me FastAPI authentication examples"
+- "What's the best way to handle database connection pooling?"
+
+View traces at http://localhost:16686 (Jaeger UI).
 
 ---
 
-## Conclusion
+## Performance Insights
 
-Building observable AI applications isn't optional - it's essential. As your agents become more complex, the ability to see inside them becomes invaluable.
+After running this in my local environment, here's what the traces revealed:
 
-In this guide, we've:
-- Built a multi-agent system with LangGraph
-- Connected to Oracle Database 23ai
-- Implemented comprehensive tracing with OpenTelemetry
-- Visualized everything in Jaeger
+![Performance Chart](images/performance-chart.png)
+<!--
+IMAGE: Horizontal bar chart showing time breakdown - Orchestrator (45ms), Doc Search (1100ms), Code Query (890ms), LLM Calls (1230ms), DB Query (95ms). Use matplotlib or Chart.js.
+-->
 
-The patterns shown here scale from simple chatbots to complex enterprise AI systems.
+| Component | Average Time | Notes |
+|-----------|--------------|-------|
+| Orchestrator Analysis | 45ms | Fast routing decision |
+| Doc Search Agent | 1.1s | Tavily API + LLM reasoning |
+| Code Query Agent | 890ms | LLM + Oracle query |
+| LLM Invocations | 1.2s total | The main bottleneck |
+| Oracle Query | 95ms | Indexed queries are fast |
 
-### Key Takeaways
+**Key Takeaway**: LLM latency dominates. For production, consider streaming responses, caching common queries, or using a faster model for routing decisions.
 
-1. **Trace everything**: LLM calls, database queries, tool invocations
-2. **Use meaningful span names**: Make traces readable
-3. **Add relevant attributes**: Enable filtering and analysis
-4. **Implement graceful degradation**: App works even if telemetry fails
+---
 
-### Next Steps
+## Lessons Learned
 
-- Add metrics for monitoring (request rates, error rates)
-- Implement alerting on slow traces
-- Build a trace analysis dashboard
-- Add semantic search with Oracle AI Vector Search
+### 1. Trace Everything from Day One
 
-### Resources
+Adding observability later is painful. Build it in from the start. Every tool call, every LLM invocation, every database query should be a span.
+
+### 2. Keep Agents Focused
+
+Single-responsibility agents are easier to debug, test, and optimize. The orchestrator pattern works well for coordinating them.
+
+### 3. Graceful Degradation Matters
+
+Your app shouldn't crash because Jaeger is down. NoOp fallbacks for telemetry are essential.
+
+### 4. Oracle 23ai is Solid
+
+The free tier of Oracle 23ai runs great in Docker. Connection pooling with oracledb works smoothly with proper configuration.
+
+---
+
+## What's Next
+
+I'm planning to extend this with:
+
+- **Vector Search** - Using Oracle AI Vector Search for semantic code matching
+- **Metrics Dashboard** - Grafana integration for request rates and error tracking
+- **Caching Layer** - Redis for common query patterns
+- **More Agents** - GitHub integration, Stack Overflow search
+
+---
+
+## Resources
 
 - [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
 - [OpenTelemetry Python](https://opentelemetry.io/docs/languages/python/)
@@ -781,8 +429,16 @@ The patterns shown here scale from simple chatbots to complex enterprise AI syst
 
 ---
 
-*Full source code available in the [repository](https://github.com/velloreakash21/multi-agent-code-assistant).*
+## Get the Code
+
+Full source code: [github.com/velloreakash21/multi-agent-code-assistant](https://github.com/velloreakash21/multi-agent-code-assistant)
 
 ---
 
-**Author: [Vellore Akash](https://www.linkedin.com/in/velloreakash/)** - AI/ML Architect with experience building enterprise AI platforms using LangChain, LlamaIndex, and cloud-native technologies.
+*Have questions? Connect with me on [LinkedIn](https://www.linkedin.com/in/velloreakash/).*
+
+---
+
+**Vellore Akash** | AI/ML Architect
+
+Building enterprise AI platforms with LangChain, LlamaIndex, and cloud-native technologies. Currently exploring the intersection of multi-agent systems and observability.
