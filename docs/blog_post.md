@@ -388,6 +388,227 @@ IMAGE: Horizontal bar chart showing time breakdown - Orchestrator (45ms), Doc Se
 
 ---
 
+## Troubleshooting Guide
+
+Here are the most common issues I encountered and how to resolve them:
+
+### Oracle Database Connection Issues
+
+**Error:** `ORA-12541: TNS:no listener`
+
+```bash
+# Check if Oracle container is running
+docker ps | grep oracle
+
+# If not running, start it
+docker-compose up -d oracle-db
+
+# Wait for database to be ready (check logs)
+docker logs -f oracle-23ai-code-assistant
+# Look for: "DATABASE IS READY TO USE!"
+```
+
+**Error:** `ORA-01017: invalid username/password`
+
+```bash
+# Create the application user (run as sysdba)
+docker exec -i oracle-23ai-code-assistant sqlplus sys/CodeAssist123@FREEPDB1 as sysdba <<'EOF'
+CREATE USER codeassist IDENTIFIED BY CodeAssist123;
+GRANT CONNECT, RESOURCE, CREATE TABLE, UNLIMITED TABLESPACE TO codeassist;
+EXIT;
+EOF
+```
+
+**Error:** `ORA-00942: table or view does not exist`
+
+```bash
+# Run the schema initialization
+python -m src.database.init_schema
+
+# Or manually create via sqlplus
+docker exec -i oracle-23ai-code-assistant sqlplus codeassist/CodeAssist123@FREEPDB1 < scripts/setup_oracle_user.sql
+```
+
+### OpenTelemetry/Jaeger Issues
+
+**Problem:** No traces appearing in Jaeger UI
+
+1. **Check Jaeger is running:**
+```bash
+docker ps | grep jaeger
+# Should show jaeger-code-assistant
+```
+
+2. **Verify OTLP endpoint:**
+```python
+# In your .env file
+OTEL_EXPORTER_ENDPOINT=http://localhost:4317
+```
+
+3. **Ensure telemetry is initialized:**
+```python
+# This must be called before any traced operations
+from src.telemetry import init_telemetry
+init_telemetry()
+```
+
+4. **Check for export errors in logs:**
+```bash
+# Look for OTLP export failures
+python -m src.main "test query" 2>&1 | grep -i "otlp\|export\|trace"
+```
+
+**Problem:** Incomplete or missing spans
+
+The BatchSpanProcessor buffers spans before export. Ensure proper shutdown:
+
+```python
+from src.telemetry import shutdown_telemetry
+
+try:
+    # Your application code
+    result = ask_assistant(query)
+finally:
+    shutdown_telemetry()  # Flushes remaining spans
+```
+
+### LLM API Issues
+
+**Error:** `anthropic.AuthenticationError`
+
+```bash
+# Verify your API key is set
+echo $ANTHROPIC_API_KEY
+
+# Or check .env file
+cat .env | grep ANTHROPIC
+```
+
+**Error:** `Rate limit exceeded`
+
+Implement exponential backoff or reduce concurrent requests:
+
+```python
+import time
+from tenacity import retry, wait_exponential
+
+@retry(wait=wait_exponential(multiplier=1, min=4, max=60))
+def call_llm_with_retry(messages):
+    return llm.invoke(messages)
+```
+
+### Tavily Search Issues
+
+**Error:** `tavily.InvalidAPIKeyError`
+
+```bash
+# Verify Tavily API key
+echo $TAVILY_API_KEY
+
+# Get a free key at https://tavily.com (1000 searches/month)
+```
+
+**Problem:** Empty search results
+
+Check your search query formatting:
+
+```python
+# Good: specific, focused queries
+search_documentation("python oracledb connection pooling")
+
+# Bad: too broad
+search_documentation("database")
+```
+
+### Streamlit Issues
+
+**Error:** `ModuleNotFoundError`
+
+```bash
+# Ensure you're in the virtual environment
+source venv/bin/activate
+
+# Reinstall dependencies
+pip install -r requirements.txt
+```
+
+**Problem:** UI not updating after code changes
+
+```bash
+# Clear Streamlit cache
+rm -rf ~/.streamlit/cache
+
+# Or clear Python cache
+find . -type d -name "__pycache__" -exec rm -rf {} +
+
+# Restart Streamlit
+streamlit run streamlit_app.py
+```
+
+### Docker Issues
+
+**Problem:** Oracle container takes too long to start
+
+First startup downloads ~1.6GB image and initializes database (~5 minutes). Subsequent starts are faster (~30 seconds).
+
+```bash
+# Monitor startup progress
+docker logs -f oracle-23ai-code-assistant
+
+# Check container health
+docker inspect oracle-23ai-code-assistant | grep -A 5 "Health"
+```
+
+**Problem:** Port conflicts
+
+```bash
+# Check if ports are in use
+lsof -i :1521  # Oracle
+lsof -i :16686 # Jaeger UI
+lsof -i :4317  # OTLP
+
+# Kill conflicting processes or change ports in docker-compose.yml
+```
+
+---
+
+## Best Practices
+
+### Observability
+
+1. **Name spans descriptively**: Use `service.operation` format (e.g., `orchestrator.analyze`, `code_query.search`)
+
+2. **Add relevant attributes**: Include query text, result counts, error messages
+
+3. **Set span status on errors**:
+```python
+from opentelemetry.trace import Status, StatusCode
+
+try:
+    result = operation()
+    span.set_status(Status(StatusCode.OK))
+except Exception as e:
+    span.set_status(Status(StatusCode.ERROR, str(e)))
+    span.record_exception(e)
+    raise
+```
+
+### Agent Design
+
+1. **Single responsibility**: Each agent should do one thing well
+2. **Explicit tool descriptions**: LLMs use these to decide which tools to call
+3. **Timeout handling**: Set reasonable timeouts for external calls
+4. **Fallback responses**: Handle gracefully when agents fail
+
+### Database
+
+1. **Use parameterized queries**: Prevent SQL injection
+2. **Index frequently queried columns**: `language`, `category`, `framework`
+3. **Connection pooling**: Reuse connections for better performance
+4. **Limit result sets**: Always use `FETCH FIRST N ROWS ONLY`
+
+---
+
 ## Lessons Learned
 
 ### 1. Trace Everything from Day One
